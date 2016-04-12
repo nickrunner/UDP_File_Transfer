@@ -64,9 +64,13 @@ int main (int argc, char** argv){
 	char send_buf[264];
 	int flag, flag2 = 0;
 	unsigned char frame_num = 0;
+	unsigned int send_num = 0;
 	vector<packet> packets;
+	vector<unsigned int> acks;
 	int count = 0;
 	packet send_packet;
+	bool first_time = true;
+	int limit;
 
 	while(1){
  	  printf("server running \n");
@@ -119,6 +123,7 @@ int main (int argc, char** argv){
 
 			  	//Keep track of frame number and window count
 			  	send_packet.frame_num++;
+			  	send_num = htonl(send_packet.frame_num);
 			  	count++;
 
 			  	//initialize data buffer to 0
@@ -129,7 +134,7 @@ int main (int argc, char** argv){
 
 			  	//Copy Sequence frame number and data buffer into send buffer
 			  	printf("Frame num: %u at \n", send_packet.frame_num);
-			  	memcpy(send_buf, &send_packet.frame_num, 4);
+			  	memcpy(send_buf, &send_num, 4);
 				memcpy(&send_buf[4], &send_packet.data, send_size);
 
 			  	//expand size of send buffer and push buffer onto packet storage vector
@@ -160,23 +165,52 @@ int main (int argc, char** argv){
 			  	}
 
 			  	//After 5 packets receive ACK from first packet
-			  	unsigned int ack;
+
 			  	if(count >= 5){
-			  		recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+			  		unsigned int ack;
+			  		unsigned int ack_num;
+			  		
+			  		unsigned int packet_num = htonl(packets[0].frame_num);
+			  		
+			  		if(first_time){
+			  			limit = 5;
+			  			first_time = false;
+			  		}
+			  		else{
+			  			limit = 1;
+			  		}
+
+			  		for(i=0; i<limit; i++){
+			  			recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+			  			ack_num = ntohl(ack);
+			  			printf("Receiving ACK for frame %d\n", ack_num);
+			  			acks.push_back(ack);
+			  		}
+			  		 
 			  		//Verify that recieved ACK is for the first packet sent in the window
-			  		if(ack == packets[0].frame_num){
+			  		int flag = 0;
+			  		for(i=1; i<acks.size()+1; i++){
+			  			printf("Packet Num: %d  ACK num: %d\n", packet_num, acks[i-1]);
+			  			if(acks[i-1] == packet_num){
+			  				flag = i;
+			  				ack_num = ntohl(acks[i-1]);
+			  				break;
+			  			}
+			  		}
+			  		if(flag != 0){
 			  			//We got the ACK for this packet
 			  			//remove packet from vector and continue to send next packet
-			  			printf("Correct frame: Received ACK for frame %d\n", ack);
+			  			printf("Correct frame: Received ACK for frame %d\n", ack_num);
 			  			packets.erase(packets.begin());
+			  			acks.erase(acks.begin()+flag-1);
 			  		}
 			  		else{
 			  			//We did not get the correct ACK
 			  			//resend packet from vector
-			  			printf("Did not recieve ACK for correct frame... frame: %d\n", ack);
+			  			printf("Did not recieve ACK for correct frame... frame: %d\n", ack_num);
 
 			  			memcpy(&send_buf, &packets[ack], 256);
-			  			sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
+			  			//sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
 			  		}
 			  	}
 
@@ -194,6 +228,8 @@ int main (int argc, char** argv){
 	 	memset(filename,0,strlen(filename));
 	  	memset(line,0,strlen(line));
 	  	memset(client_status,0,strlen(client_status));
+	  	frame_num = 0;
+	  	first_time = true;
 
 	}
 

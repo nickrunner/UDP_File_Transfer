@@ -86,7 +86,8 @@ int main (int argc, char** argv){
 	char buffer[CHUNK_SIZE];
 	int i, j = 0;
 	unsigned int frame_count =0;
-	unsigned char frame_num;
+	unsigned int frame_num = 0;
+	unsigned int send_num;
 
 	socklen_t len = sizeof(serveraddr);
 
@@ -142,16 +143,17 @@ int main (int argc, char** argv){
 				n = recvfrom(sockfd, buffer, CHUNK_SIZE+4, 0, (struct sockaddr*)&serveraddr, &len);
 				printf("Received: %d\n", n);
 				memcpy(&frame_num, &buffer, 4);
-				printf("Frame Count: %d   Received Frame: %d\n", frame_count, frame_num);
+				send_num = htonl(frame_num);
+				printf("Frame Count: %d   Received Frame: %d\n", frame_count, send_num);
 				printf("Writing to file\n");
 				fwrite(&buffer[4], 1, n-4, fp);
 				printf("Write success\n");
 
 				//Send acknowledgement;
-				sendto(sockfd, &frame_num, strlen(filename),0, (struct sockaddr*)&serveraddr, len);
-
+				sendto(sockfd, &frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
+				printf("Sending ACK for frame %d\n", send_num);
 			}while( n >= CHUNK_SIZE);
-
+			frame_count = 0;
 			if(incoming_data < 0){
 				printf("Error reading data\n");
 			}
