@@ -137,7 +137,7 @@ int main (int argc, char** argv){
 			int n;
 			//Write each chunk of data to newly created file
 			do{
-				frame_count = frame_count + 1;
+				frame_count++;
 				//incoming_data = read(sockfd, buffer, CHUNK_SIZE);
 				n = recvfrom(sockfd, buffer, CHUNK_SIZE+4, 0, (struct sockaddr*)&serveraddr, &len);
 				printf("Received: %d\n", n);
@@ -146,6 +146,10 @@ int main (int argc, char** argv){
 				printf("Writing to file\n");
 				fwrite(&buffer[4], 1, n-4, fp);
 				printf("Write success\n");
+
+				//Send acknowledgement;
+				sendto(sockfd, frame_num, strlen(filename),0, (struct sockaddr*)&serveraddr, len);
+
 			}while( n >= CHUNK_SIZE);
 
 			if(incoming_data < 0){

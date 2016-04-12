@@ -7,10 +7,13 @@
 #include <stdio.h>
 #include <string.h>
 #include <sys/select.h>
+#include <vector>
+
+using namespace std;
 
 #define CHUNK_SIZE 256
-#define BUF_SIZE 290
 
+#define BUF_SIZE 290
 typedef struct eth_hdr{
 	char dst_addr[6];
 	char src_addr[6];
@@ -86,6 +89,9 @@ int main (int argc, char** argv){
 	char send_buf[264];
 	int flag, flag2 = 0;
 	unsigned char frame_num = 0;
+	unsinged char ack_num = 0;
+	vector<char[264]> packets;
+	int count = 0;
 
 	eth_hdr eth;
 	ip_hdr ip;
@@ -137,26 +143,44 @@ int main (int argc, char** argv){
 
 				//Send data in 256 byte chunks
 			  while(1){
+
+			  	//Keep track of frame number and window count
 			  	frame_num++;
+			  	count++;
+
+			  	//initialize data buffer to 0
 			  	char buffer[CHUNK_SIZE]={0};
-			  	int data_to_send = fread(buffer, 1, CHUNK_SIZE, fp);
+
+			  	//read from file and store data in data buffer
+			  	int send_size = fread(buffer, 1, CHUNK_SIZE, fp);
+
+			  	//Copy Sequence frame number and data buffer into send buffer
 			  	printf("Frame num: %u at \n", frame_num);
 			  	memcpy(send_buf, &frame_num, 4);
 			  	memcpy(&send_buf[4], &buffer, 256);
-			  	data_to_send += 4;
-			  	if(data_to_send != 0){
-			  		printf("Sending data: %d\n", data_to_send);
-			  		//write(clientsocket, buffer, data_to_send);
-			  		/*char eth_tmp[6];
-			  		char ip_tmp[4];
-			  		memcpy(eth_tmp, &eth.dst_addr, 6);
-			  		memcpy(&eth.dst_addr, eth.src_addr, 6);
-			  		memcpy(eth.src_addr, eth_tmp, 6);
-			  		memcpy(ip_tmp, &ip.dst_addr, 4);
-			  		memcpy(&ip.dst_addr, ip.src_addr, 4);
-			  		memcpy(ip.src_addr, ip_tmp, 4);
-			  		push_data(eth, ip, buffer, buf, CHUNK_SIZE);*/
-			  		sendto(sockfd, send_buf, data_to_send, 0,  (struct sockaddr*)&clientaddr, len);
+
+			  	//expand size of send buffer and push buffer onto packet storage vector
+			  	send_size += 4;
+			  	packets.pushback(send_buf);
+
+			  	//After 5 packets receive ACK from first packet
+			  	unsigned char ack;
+			  	if(count >= 5){
+			  		recvfrom(sockfd, ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+			  		//Verify that recieved ACK is for the first packet sent in the window
+			  		if(ack == frame_num - 5){
+			  			//We got the ACK for this packet
+			  			//remove packet from vector and continue to send next packet
+			  		}
+			  		else{
+			  			//We did not get the correct ACK
+			  			//resend packet from vector
+			  		}
+			  	}
+
+			  	if(send_size != 0){
+			  		printf("Sending data: %d\n", send_size);
+			  		sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
 
 			  	}
 			  	else{
@@ -164,9 +188,9 @@ int main (int argc, char** argv){
 			  		break;
 			  	}
 
-			  	if(data_to_send < 256){
+			  	if(send_size < 256){
 			  		if(feof(fp)){
-			  			//printf("size: \n", sizeof(data_to_send));
+			  			//printf("size: \n", sizeof(send_size));
 			  			printf("End of File\n");
 			  		}
 			  		if(ferror(fp)){
