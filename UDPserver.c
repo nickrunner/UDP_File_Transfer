@@ -14,38 +14,13 @@ using namespace std;
 #define CHUNK_SIZE 256
 
 #define BUF_SIZE 290
-typedef struct eth_hdr{
-	char dst_addr[6];
-	char src_addr[6];
-	uint16_t _type;
-}eth_hdr;
 
-typedef struct ip_hdr{
-	uint8_t version: 4;
-	uint8_t ihl: 4;
-	uint8_t dscb;
-	uint16_t total_length;
-	uint16_t id;
-	uint16_t frag_offset;
-	uint8_t ttl;
-	uint8_t protocol;
-	uint16_t checksum;
-	char src_addr[4];
-	char dst_addr[4];
-}ip_hdr;
+typedef struct packet{
+	unsigned int frame_num;
+	char data[256];
+}packet;
 
-void push_data(eth_hdr& eth, ip_hdr& ip, char* data, char* buf, int datalen){
-	memset(buf, 0, 290);
-	memcpy(buf, &eth, 14);
-	memcpy(&buf[14], &ip, 20);
-	memcpy(&buf[34], data, datalen);
-}
 
-void pull_data(eth_hdr& eth, ip_hdr& ip, char* data, char* buf, int datalen){
-	memcpy(&eth, buf, 14);
-	memcpy(&ip, &buf[14], 20);
-	memcpy(data, &buf[34], datalen);
-}
 
 int main (int argc, char** argv){
 
@@ -89,12 +64,9 @@ int main (int argc, char** argv){
 	char send_buf[264];
 	int flag, flag2 = 0;
 	unsigned char frame_num = 0;
-	unsinged char ack_num = 0;
-	vector<char[264]> packets;
+	vector<packet> packets;
 	int count = 0;
-
-	eth_hdr eth;
-	ip_hdr ip;
+	packet send_packet;
 
 	while(1){
  	  printf("server running \n");
@@ -142,42 +114,30 @@ int main (int argc, char** argv){
 		  
 
 				//Send data in 256 byte chunks
+		  		send_packet.frame_num = 0;
 			  while(1){
 
 			  	//Keep track of frame number and window count
-			  	frame_num++;
+			  	send_packet.frame_num++;
 			  	count++;
 
 			  	//initialize data buffer to 0
-			  	char buffer[CHUNK_SIZE]={0};
+			  	//char buffer[CHUNK_SIZE]={0};
 
 			  	//read from file and store data in data buffer
-			  	int send_size = fread(buffer, 1, CHUNK_SIZE, fp);
+			  	int send_size = fread(&send_packet.data, 1, CHUNK_SIZE, fp);
 
 			  	//Copy Sequence frame number and data buffer into send buffer
-			  	printf("Frame num: %u at \n", frame_num);
-			  	memcpy(send_buf, &frame_num, 4);
-			  	memcpy(&send_buf[4], &buffer, 256);
+			  	printf("Frame num: %u at \n", send_packet.frame_num);
+			  	memcpy(send_buf, &send_packet.frame_num, 4);
+				memcpy(&send_buf[4], &send_packet.data, send_size);
 
 			  	//expand size of send buffer and push buffer onto packet storage vector
 			  	send_size += 4;
-			  	packets.pushback(send_buf);
+			  	packets.push_back(send_packet);
 
-			  	//After 5 packets receive ACK from first packet
-			  	unsigned char ack;
-			  	if(count >= 5){
-			  		recvfrom(sockfd, ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
-			  		//Verify that recieved ACK is for the first packet sent in the window
-			  		if(ack == frame_num - 5){
-			  			//We got the ACK for this packet
-			  			//remove packet from vector and continue to send next packet
-			  		}
-			  		else{
-			  			//We did not get the correct ACK
-			  			//resend packet from vector
-			  		}
-			  	}
 
+			  	//Send Packet if it has data
 			  	if(send_size != 0){
 			  		printf("Sending data: %d\n", send_size);
 			  		sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
@@ -197,6 +157,27 @@ int main (int argc, char** argv){
 			  			printf("Error Reading File\n");
 			  		}
 			  		break;
+			  	}
+
+			  	//After 5 packets receive ACK from first packet
+			  	unsigned int ack;
+			  	if(count >= 5){
+			  		recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+			  		//Verify that recieved ACK is for the first packet sent in the window
+			  		if(ack == packets[0].frame_num){
+			  			//We got the ACK for this packet
+			  			//remove packet from vector and continue to send next packet
+			  			printf("Correct frame: Received ACK for frame %d\n", ack);
+			  			packets.erase(packets.begin());
+			  		}
+			  		else{
+			  			//We did not get the correct ACK
+			  			//resend packet from vector
+			  			printf("Did not recieve ACK for correct frame... frame: %d\n", ack);
+
+			  			memcpy(&send_buf, &packets[ack], 256);
+			  			sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
+			  		}
 			  	}
 
 			  }

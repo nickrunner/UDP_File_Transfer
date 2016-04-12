@@ -85,7 +85,7 @@ int main (int argc, char** argv){
 	char title[10] = "new_file.";
 	char buffer[CHUNK_SIZE];
 	int i, j = 0;
-	unsigned char frame_count =0;
+	unsigned int frame_count =0;
 	unsigned char frame_num;
 
 	socklen_t len = sizeof(serveraddr);
@@ -148,7 +148,7 @@ int main (int argc, char** argv){
 				printf("Write success\n");
 
 				//Send acknowledgement;
-				sendto(sockfd, frame_num, strlen(filename),0, (struct sockaddr*)&serveraddr, len);
+				sendto(sockfd, &frame_num, strlen(filename),0, (struct sockaddr*)&serveraddr, len);
 
 			}while( n >= CHUNK_SIZE);
 
