@@ -72,6 +72,12 @@ int main (int argc, char** argv){
 	//AF_INET specifies an internet socket
 	char buf[BUF_SIZE];
 	int port;
+
+	//Setup Timeout
+	struct timeval tv;
+	tv.tv_sec = 0;
+	tv.tv_usec = 100000;
+
 	char status_string[10] = "yes";
 	printf("Enter a port ");
 	scanf("%d", &port);
@@ -81,8 +87,8 @@ int main (int argc, char** argv){
 	  printf("There was an arror creating the socket\n") ;
 	  return 1;
 	}
-	fd_set sockets;
-	FD_ZERO(&sockets);
+	
+
 	
 	struct sockaddr_in serveraddr;
 	struct sockaddr_in clientaddr;
@@ -116,12 +122,13 @@ int main (int argc, char** argv){
 	bool first_time = true;
 	int limit;
 	unsigned int frame_count =0;
+	unsigned int ack;
+	unsigned int ack_num;
+	int j=0;
 
 	while(1){
  	  printf("server running \n");
 	  socklen_t len = sizeof(clientaddr);
-	  
-	  fd_set tmp_set = sockets;
 
 	  printf("Ready to select socket\n");
 
@@ -180,7 +187,7 @@ int main (int argc, char** argv){
 				//Function returns checksum in network byte order
 				send_packet.checksum = 0;
 				//print_buf(send_packet);
-				uint16_t tmp = calc_checksum(&send_packet, BUF_SIZE);
+				uint16_t tmp = calc_checksum(&send_packet, data_size+6);
 				send_packet.checksum = tmp;
 				memcpy(&send_buf[4], &send_packet.checksum, data_size);
 
@@ -190,8 +197,8 @@ int main (int argc, char** argv){
 
 				//Send Packet if it has data
 				if(data_size != 0){
-					printf("Sending %d bytes of data \n", BUF_SIZE);
-					sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+					printf("Sending %d bytes of data \n", data_size+6);
+					sendto(sockfd, send_buf, data_size+6, 0,  (struct sockaddr*)&clientaddr, len);
 
 				}
 				else{
@@ -199,22 +206,11 @@ int main (int argc, char** argv){
 					break;
 				}
 
-				if(data_size < 256){
-					if(feof(fp)){
-						//printf("size: \n", sizeof(send_size));
-						printf("End of File\n");
-					}
-					if(ferror(fp)){
-						printf("Error Reading File\n");
-					}
-					break;
-				}
-
+			
 				//After 5 packets start recieving ACK's
 
 				if(count >= 5){
-					unsigned int ack;
-					unsigned int ack_num;
+					
 					
 					unsigned int packet_num = packets[0].frame_num;
 					
@@ -226,17 +222,26 @@ int main (int argc, char** argv){
 						limit = 1;
 					}
 
+					//Start Receiving ACK's
+					//Configure Timeout
+					if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+						perror("Error");
+					}
 					for(i=0; i<limit; i++){
-						recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
-						ack_num = ntohl(ack);
-						printf("Receiving ACK for frame %d\n", ack_num);
+						printf("Receiving ACK...\n");
+						if(recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len) < 0){
+							//Timeout reached continue through loop
+							continue;
+						}	
+						ack_num = ntohl(ack);						
 						acks.push_back(ack);
+						printf("ACK received for frame %d\n", ack_num);
 					}
 					 
 					//Verify that recieved ACK is for the first packet sent in the window
 					int flag = 0;
 					for(i=1; i<acks.size()+1; i++){
-						printf("Packet Num: %d  ACK num: %d\n", packet_num, acks[i-1]);
+						//printf("Packet Num: %d  ACK num: %d\n", packet_num, acks[i-1]);
 						if(acks[i-1] == packet_num){
 							flag = i;
 							ack_num = ntohl(acks[i-1]);
@@ -246,7 +251,7 @@ int main (int argc, char** argv){
 					if(flag != 0){
 						//We got the ACK for this packet
 						//remove packet from vector and continue to send next packet
-						printf("Correct frame: Received ACK for frame %d\n", ack_num);
+						printf("Found the ACK for frame %d... sending next packet\n", ack_num);
 						packets.erase(packets.begin());
 						acks.erase(acks.begin()+flag-1);
 					}
@@ -258,6 +263,41 @@ int main (int argc, char** argv){
 						sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
 					}
 				}
+					bool ack_flag = false;
+					if(data_size < 256){
+					if(feof(fp)){
+
+						//Make sure client received final 5 packets
+						for(i=0; i<packets.size(); i++){
+							for(j=0; j<acks.size(); j++){
+								if(packets[i].frame_num == acks[j]){
+									ack_num = ntohl(acks[i]);
+									printf("Received ACK for frame %d\n", ack_num);
+									ack_flag = true;
+								}						
+							}
+							if(!ack_flag){
+								//resend missing packet
+								printf("ACK missing... resending packet\n");
+								memcpy(&send_buf, &packets[i], 256);
+								sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+								//receive missing ack
+								recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+								ack_num = ntohl(ack);						
+								acks.push_back(ack);
+								printf("ACK received for frame %d\n", ack_num);	
+								ack_flag = false;
+							}
+						}
+						printf("End of File\n");
+					}
+					if(ferror(fp)){
+						printf("Error Reading File\n");
+					}
+					break;
+				}
+
+				printf("\n");
 			}
 		}
 		
@@ -273,6 +313,8 @@ int main (int argc, char** argv){
 	  	memset(&send_packet.data, 0, 256);
 	  	packets.clear();
 	  	acks.clear();
+	  	frame_count = 0;
+	  	count = 0;
 
 	}
 

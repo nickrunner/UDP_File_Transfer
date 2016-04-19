@@ -165,8 +165,8 @@ int main (int argc, char** argv){
 			printf("Received %d bytes of data\n", n);
 
 			//Get data from packet
-			memcpy(&rcv_packet.data, &buffer[6], 256);
 
+			memcpy(&rcv_packet.data, &buffer[6], 256);
 			//Get frame number from packet
 			memcpy(&rcv_packet.frame_num, &buffer, 4);
 
@@ -177,7 +177,7 @@ int main (int argc, char** argv){
 			//clear checksum and recalculate
 			rcv_packet.checksum = 0;
 			//print_buf(rcv_packet);
-			uint16_t tmp = calc_checksum(&rcv_packet, 262);
+			uint16_t tmp = calc_checksum(&rcv_packet, n);
 			rcv_packet.checksum = tmp;
 
 			received_frame = htonl(rcv_packet.frame_num);
@@ -199,7 +199,9 @@ int main (int argc, char** argv){
 
 			//Handle ACK packet loss
 			else if(received_frame < frame_count){
-				printf("Received a duplicate packet\n");
+				printf("Received a duplicate packet... Resending ACK for frame %d\n", received_frame);
+				//Re-send ACK
+				sendto(sockfd, &rcv_packet.frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
 			}
 
 			else{
@@ -209,10 +211,11 @@ int main (int argc, char** argv){
 				printf("Write success\n");
 
 				//Send acknowledgement;
+				printf("Sending ACK for frame %d...\n", received_frame);
 				sendto(sockfd, &rcv_packet.frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
-				printf("Sending ACK for frame %d\n", received_frame);
+				
 			}
-
+			printf("\n");
 		}while( n >= CHUNK_SIZE);
 		frame_count = 0;
 		if(incoming_data < 0){
