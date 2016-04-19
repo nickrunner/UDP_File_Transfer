@@ -13,46 +13,63 @@
 
 #define CHUNK_SIZE 256
 
-typedef struct eth_hdr{
-	char dst_addr[6];
-	char src_addr[6];
-	uint16_t _type;
-}eth_hdr;
-
-typedef struct ip_hdr{
-	uint8_t version: 4;
-	uint8_t ihl: 4;
-	uint8_t dscb;
-	uint16_t total_length;
-	uint16_t id;
-	uint16_t frag_offset;
-	uint8_t ttl;
-	uint8_t protocol;
+typedef struct packet{
+	unsigned int frame_num;
 	uint16_t checksum;
-	char src_addr[4];
-	char dst_addr[4];
-}ip_hdr;
+	char data[256];
+}packet;
 
-void push_data(eth_hdr& eth, ip_hdr& ip, char* data, char* buf, int datalen){
-	memset(buf, 0, 290);
-	memcpy(buf, &eth, 14);
-	memcpy(&buf[14], &ip, 20);
-	memcpy(&buf[34], data, datalen);
+
+uint16_t calc_checksum(void* vdata,size_t length) {
+    // Cast the data pointer to one that can be indexed.
+    char* data=(char*)vdata;
+
+    // Initialise the accumulator.
+    uint32_t acc=0xffff;
+
+    // Handle complete 16-bit blocks.
+    for (size_t i=0;i+1<length;i+=2) {
+        uint16_t word;
+        memcpy(&word,data+i,2);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Handle any partial block at the end of the data.
+    if (length&1) {
+        uint16_t word=0;
+        memcpy(&word,data+length-1,1);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Return the checksum in network byte order.
+    return htons(~acc);
 }
 
-void pull_data(eth_hdr& eth, ip_hdr& ip, char* data, char* buf, int datalen){
-	memcpy(&eth, buf, 14);
-	memcpy(&ip, &buf[14], 20);
-	memcpy(data, &buf[34], datalen);
+void print_buf(packet p){
+	int i, j;
+	printf("\nFrame num: %d\n", p.frame_num);
+	printf("checksum: %d\n", p.checksum);
+	printf("\n\nDATA\n\n");
+	for(i=0; i<CHUNK_SIZE; i++){
+		printf("%02x ", (unsigned char)p.data[i]);
+		if(i%16 == 0 && i != 0){
+			printf("\n");
+		}
+	}
 }
+
 
 int main (int argc, char** argv){
 
 	//SOCK_STREAM choses network layer
 	//AF_INET specifies an internet socket
 	int port;
-	eth_hdr eth;
-	ip_hdr ip;
 	printf("Enter a port ");
 	scanf("%d", &port);
 
@@ -86,8 +103,10 @@ int main (int argc, char** argv){
 	char buffer[CHUNK_SIZE];
 	int i, j = 0;
 	unsigned int frame_count =0;
-	unsigned int frame_num = 0;
+	unsigned int received_frame = 0;
 	unsigned int send_num;
+	uint16_t checksum;
+	packet rcv_packet;
 
 	socklen_t len = sizeof(serveraddr);
 
@@ -123,40 +142,82 @@ int main (int argc, char** argv){
 		//Make sure server found the file okay then start writing data
 		//if(strcmp(file_status, "Error opening file.\n") != 0){
 
-			//Create new file to store incoming data
-			FILE *fp;
-			fp = fopen(new_file, "w");
-			printf("Creating new file\n");
-			if(fp == NULL){
-				printf("Error creating file\n");
+		//Create new file to store incoming data
+		FILE *fp;
+		fp = fopen(new_file, "w");
+		printf("Creating new file\n");
+		if(fp == NULL){
+			printf("Error creating file\n");
+		}
+
+		int incoming_data = 0;
+
+		//Clear buffer
+		memset(buffer, 0, sizeof(buffer));
+		int n;
+		//Write each chunk of data to newly created file
+		do{
+			//increment frame count
+			frame_count++;
+
+			//receive data from server
+			n = recvfrom(sockfd, buffer, CHUNK_SIZE+6, 0, (struct sockaddr*)&serveraddr, &len);
+			printf("Received %d bytes of data\n", n);
+
+			//Get data from packet
+			memcpy(&rcv_packet.data, &buffer[6], 256);
+
+			//Get frame number from packet
+			memcpy(&rcv_packet.frame_num, &buffer, 4);
+
+			//Get checksum from packet and store in variable
+			memcpy(&rcv_packet.checksum, &buffer[4], 2);
+			checksum = rcv_packet.checksum;
+
+			//clear checksum and recalculate
+			rcv_packet.checksum = 0;
+			//print_buf(rcv_packet);
+			uint16_t tmp = calc_checksum(&rcv_packet, 262);
+			rcv_packet.checksum = tmp;
+
+			received_frame = htonl(rcv_packet.frame_num);
+			printf("Frame Count: %d   Received Frame: %d\n", frame_count, received_frame);
+
+			
+			
+			//Handle Packet Corruption
+			if(rcv_packet.checksum != checksum){
+				printf("Received a corrupted packet\n");
+				printf("Received Checksum: %d\nCalculated Checksum: %d\n", checksum, rcv_packet.checksum);
 			}
 
-			int incoming_data = 0;
 
-			//Clear buffer
-			memset(buffer, 0, sizeof(buffer));
-			int n;
-			//Write each chunk of data to newly created file
-			do{
-				frame_count++;
-				//incoming_data = read(sockfd, buffer, CHUNK_SIZE);
-				n = recvfrom(sockfd, buffer, CHUNK_SIZE+4, 0, (struct sockaddr*)&serveraddr, &len);
-				printf("Received: %d\n", n);
-				memcpy(&frame_num, &buffer, 4);
-				send_num = htonl(frame_num);
-				printf("Frame Count: %d   Received Frame: %d\n", frame_count, send_num);
+			//Handle Data packet loss
+			else if(received_frame > frame_count){
+				printf("Did not receive the expected packet\n");
+			}
+
+			//Handle ACK packet loss
+			else if(received_frame < frame_count){
+				printf("Received a duplicate packet\n");
+			}
+
+			else{
+				//Write to file
 				printf("Writing to file\n");
-				fwrite(&buffer[4], 1, n-4, fp);
+				fwrite(&buffer[6], 1, n-6, fp);
 				printf("Write success\n");
 
 				//Send acknowledgement;
-				sendto(sockfd, &frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
-				printf("Sending ACK for frame %d\n", send_num);
-			}while( n >= CHUNK_SIZE);
-			frame_count = 0;
-			if(incoming_data < 0){
-				printf("Error reading data\n");
+				sendto(sockfd, &rcv_packet.frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
+				printf("Sending ACK for frame %d\n", received_frame);
 			}
+
+		}while( n >= CHUNK_SIZE);
+		frame_count = 0;
+		if(incoming_data < 0){
+			printf("Error reading data\n");
+		}
 		//}
 
 		//Ask user if they would like to transfer another file

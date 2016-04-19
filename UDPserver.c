@@ -13,13 +13,57 @@ using namespace std;
 
 #define CHUNK_SIZE 256
 
-#define BUF_SIZE 290
+#define BUF_SIZE 262
 
 typedef struct packet{
 	unsigned int frame_num;
+	uint16_t checksum;
 	char data[256];
 }packet;
 
+uint16_t calc_checksum(void* vdata,size_t length) {
+    // Cast the data pointer to one that can be indexed.
+    char* data=(char*)vdata;
+
+    // Initialise the accumulator.
+    uint32_t acc=0xffff;
+
+    // Handle complete 16-bit blocks.
+    for (size_t i=0;i+1<length;i+=2) {
+        uint16_t word;
+        memcpy(&word,data+i,2);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Handle any partial block at the end of the data.
+    if (length&1) {
+        uint16_t word=0;
+        memcpy(&word,data+length-1,1);
+        acc+=ntohs(word);
+        if (acc>0xffff) {
+            acc-=0xffff;
+        }
+    }
+
+    // Return the checksum in network byte order.
+    return htons(~acc);
+}
+
+void print_buf(packet p){
+	int i, j;
+	printf("\nFrame num: %d\n", p.frame_num);
+	printf("checksum: %d\n", p.checksum);
+	printf("\n\nDATA\n\n");
+	for(i=0; i<CHUNK_SIZE; i++){
+		printf("%02x ", (unsigned char)p.data[i]);
+		if(i%16 == 0 && i != 0){
+			printf("\n");
+		}
+	}
+}
 
 
 int main (int argc, char** argv){
@@ -71,6 +115,7 @@ int main (int argc, char** argv){
 	packet send_packet;
 	bool first_time = true;
 	int limit;
+	unsigned int frame_count =0;
 
 	while(1){
  	  printf("server running \n");
@@ -99,130 +144,124 @@ int main (int argc, char** argv){
 		  flag = 1;
 		}
 
-		//Only send file if client is connected
-		if(flag2 == 0){
 
-		  //Open File
-		  FILE *fp = fopen(filename,"r");
+	  //Open File
+	  FILE *fp = fopen(filename,"r");
 
-		  //Send error message if file DNE
-		  if(fp == NULL){
-		  	printf("Error opening file\n");
-		  	//sendto(sockfd, buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, &len)
-		  }
+	  //Send error message if file DNE
+	  if(fp == NULL){
+	  	printf("Error opening file\n");
+	  	//sendto(sockfd, buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, &len)
+	  }
 
-		  //Send file upon successful open
-		  else{
-		  	printf("Success opening file. Sending status\n");
-		  	//sendto(sockfd, buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, &len)
-		  
+	  //Send file upon successful open
+	  else{
+	  	printf("Success opening file.\n");
+	  
 
-				//Send data in 256 byte chunks
-		  		send_packet.frame_num = 0;
-			  while(1){
+			//Send data in 256 byte chunks
+	  		send_packet.frame_num = 0;
+			while(1){
 
-			  	//Keep track of frame number and window count
-			  	send_packet.frame_num++;
-			  	send_num = htonl(send_packet.frame_num);
-			  	count++;
+				//Keep track of frame number and window count
+				frame_count++;
+				send_packet.frame_num = htonl(frame_count);
+				count++;
 
-			  	//initialize data buffer to 0
-			  	//char buffer[CHUNK_SIZE]={0};
+				//read from file and store data in data buffer
+				int data_size = fread(&send_packet.data, 1, CHUNK_SIZE, fp);
 
-			  	//read from file and store data in data buffer
-			  	int send_size = fread(&send_packet.data, 1, CHUNK_SIZE, fp);
+				//Copy Sequence frame number and data buffer into send buffer
+				printf("Frame num: %u at \n", frame_count);
+				memcpy(send_buf, &send_packet.frame_num, 4);
+				memcpy(&send_buf[6], &send_packet.data, data_size);
 
-			  	//Copy Sequence frame number and data buffer into send buffer
-			  	printf("Frame num: %u at \n", send_packet.frame_num);
-			  	memcpy(send_buf, &send_num, 4);
-				memcpy(&send_buf[4], &send_packet.data, send_size);
+				//Clear checksum and calculate
+				//Function returns checksum in network byte order
+				send_packet.checksum = 0;
+				//print_buf(send_packet);
+				uint16_t tmp = calc_checksum(&send_packet, BUF_SIZE);
+				send_packet.checksum = tmp;
+				memcpy(&send_buf[4], &send_packet.checksum, data_size);
 
-			  	//expand size of send buffer and push buffer onto packet storage vector
-			  	send_size += 4;
-			  	packets.push_back(send_packet);
+				//push buffer onto packet storage vector
+				packets.push_back(send_packet);
 
 
-			  	//Send Packet if it has data
-			  	if(send_size != 0){
-			  		printf("Sending data: %d\n", send_size);
-			  		sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
+				//Send Packet if it has data
+				if(data_size != 0){
+					printf("Sending %d bytes of data \n", BUF_SIZE);
+					sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
 
-			  	}
-			  	else{
-			  		printf("Error sending data\n");
-			  		break;
-			  	}
+				}
+				else{
+					printf("Error sending data\n");
+					break;
+				}
 
-			  	if(send_size < 256){
-			  		if(feof(fp)){
-			  			//printf("size: \n", sizeof(send_size));
-			  			printf("End of File\n");
-			  		}
-			  		if(ferror(fp)){
-			  			printf("Error Reading File\n");
-			  		}
-			  		break;
-			  	}
+				if(data_size < 256){
+					if(feof(fp)){
+						//printf("size: \n", sizeof(send_size));
+						printf("End of File\n");
+					}
+					if(ferror(fp)){
+						printf("Error Reading File\n");
+					}
+					break;
+				}
 
-			  	//After 5 packets receive ACK from first packet
+				//After 5 packets start recieving ACK's
 
-			  	if(count >= 5){
-			  		unsigned int ack;
-			  		unsigned int ack_num;
-			  		
-			  		unsigned int packet_num = htonl(packets[0].frame_num);
-			  		
-			  		if(first_time){
-			  			limit = 5;
-			  			first_time = false;
-			  		}
-			  		else{
-			  			limit = 1;
-			  		}
+				if(count >= 5){
+					unsigned int ack;
+					unsigned int ack_num;
+					
+					unsigned int packet_num = packets[0].frame_num;
+					
+					if(first_time){
+						limit = 5;
+						first_time = false;
+					}
+					else{
+						limit = 1;
+					}
 
-			  		for(i=0; i<limit; i++){
-			  			recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
-			  			ack_num = ntohl(ack);
-			  			printf("Receiving ACK for frame %d\n", ack_num);
-			  			acks.push_back(ack);
-			  		}
-			  		 
-			  		//Verify that recieved ACK is for the first packet sent in the window
-			  		int flag = 0;
-			  		for(i=1; i<acks.size()+1; i++){
-			  			printf("Packet Num: %d  ACK num: %d\n", packet_num, acks[i-1]);
-			  			if(acks[i-1] == packet_num){
-			  				flag = i;
-			  				ack_num = ntohl(acks[i-1]);
-			  				break;
-			  			}
-			  		}
-			  		if(flag != 0){
-			  			//We got the ACK for this packet
-			  			//remove packet from vector and continue to send next packet
-			  			printf("Correct frame: Received ACK for frame %d\n", ack_num);
-			  			packets.erase(packets.begin());
-			  			acks.erase(acks.begin()+flag-1);
-			  		}
-			  		else{
-			  			//We did not get the correct ACK
-			  			//resend packet from vector
-			  			printf("Did not recieve ACK for correct frame... frame: %d\n", ack_num);
-
-			  			memcpy(&send_buf, &packets[ack], 256);
-			  			//sendto(sockfd, send_buf, send_size, 0,  (struct sockaddr*)&clientaddr, len);
-			  		}
-			  	}
-
-			  }
+					for(i=0; i<limit; i++){
+						recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+						ack_num = ntohl(ack);
+						printf("Receiving ACK for frame %d\n", ack_num);
+						acks.push_back(ack);
+					}
+					 
+					//Verify that recieved ACK is for the first packet sent in the window
+					int flag = 0;
+					for(i=1; i<acks.size()+1; i++){
+						printf("Packet Num: %d  ACK num: %d\n", packet_num, acks[i-1]);
+						if(acks[i-1] == packet_num){
+							flag = i;
+							ack_num = ntohl(acks[i-1]);
+							break;
+						}
+					}
+					if(flag != 0){
+						//We got the ACK for this packet
+						//remove packet from vector and continue to send next packet
+						printf("Correct frame: Received ACK for frame %d\n", ack_num);
+						packets.erase(packets.begin());
+						acks.erase(acks.begin()+flag-1);
+					}
+					else{
+						//We did not get the correct ACK
+						//resend packet from vector
+						printf("Did not recieve ACK for correct frame... frame: %d\n", ack_num);
+						memcpy(&send_buf, &packets[ack], 256);
+						sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+					}
+				}
 			}
 		}
+		
 
-		//Shutdown server if client disconnected
-		else{
-			printf("\n\nShutting Down Server\n");
-			break;
-		}
 
 		//Clear Strings
 	 	memset(filename,0,strlen(filename));
@@ -230,6 +269,10 @@ int main (int argc, char** argv){
 	  	memset(client_status,0,strlen(client_status));
 	  	frame_num = 0;
 	  	first_time = true;
+	  	memset(&send_packet.frame_num, 0, 4);
+	  	memset(&send_packet.data, 0, 256);
+	  	packets.clear();
+	  	acks.clear();
 
 	}
 
