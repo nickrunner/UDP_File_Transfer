@@ -189,12 +189,14 @@ int main (int argc, char** argv){
 			if(rcv_packet.checksum != checksum){
 				printf("Received a corrupted packet\n");
 				printf("Received Checksum: %d\nCalculated Checksum: %d\n", checksum, rcv_packet.checksum);
+				frame_count--;
 			}
 
 
 			//Handle Data packet loss
 			else if(received_frame > frame_count){
 				printf("Did not receive the expected packet\n");
+				frame_count--;
 			}
 
 			//Handle ACK packet loss
@@ -202,12 +204,13 @@ int main (int argc, char** argv){
 				printf("Received a duplicate packet... Resending ACK for frame %d\n", received_frame);
 				//Re-send ACK
 				sendto(sockfd, &rcv_packet.frame_num, 4, 0, (struct sockaddr*)&serveraddr, len);
+				frame_count--;
 			}
 
 			else{
 				//Write to file
 				printf("Writing to file\n");
-				fwrite(&buffer[6], 1, n-6, fp);
+				fwrite(&rcv_packet.data, 1, sizeof(rcv_packet.data), fp);
 				printf("Write success\n");
 
 				//Send acknowledgement;
@@ -216,7 +219,7 @@ int main (int argc, char** argv){
 				
 			}
 			printf("\n");
-		}while( n >= CHUNK_SIZE);
+		}while( n >= CHUNK_SIZE || frame_count != received_frame);
 		frame_count = 0;
 		if(incoming_data < 0){
 			printf("Error reading data\n");

@@ -76,7 +76,7 @@ int main (int argc, char** argv){
 	//Setup Timeout
 	struct timeval tv;
 	tv.tv_sec = 0;
-	tv.tv_usec = 100000;
+	
 
 	char status_string[10] = "yes";
 	printf("Enter a port ");
@@ -125,6 +125,8 @@ int main (int argc, char** argv){
 	unsigned int ack;
 	unsigned int ack_num;
 	int j=0;
+	bool nack_flag = false;
+	int data_size;
 
 	while(1){
  	  printf("server running \n");
@@ -169,35 +171,36 @@ int main (int argc, char** argv){
 			//Send data in 256 byte chunks
 	  		send_packet.frame_num = 0;
 			while(1){
+				if(nack_flag == false){
+					//Keep track of frame number and window count
+					frame_count++;
+					send_packet.frame_num = htonl(frame_count);
+					count++;
 
-				//Keep track of frame number and window count
-				frame_count++;
-				send_packet.frame_num = htonl(frame_count);
-				count++;
+					//read from file and store data in data buffer
+					data_size = fread(&send_packet.data, 1, CHUNK_SIZE, fp);
 
-				//read from file and store data in data buffer
-				int data_size = fread(&send_packet.data, 1, CHUNK_SIZE, fp);
+					//Copy Sequence frame number and data buffer into send buffer
+					printf("Frame num: %u at \n", frame_count);
+					memcpy(send_buf, &send_packet.frame_num, 4);
+					memcpy(&send_buf[6], &send_packet.data, data_size);
 
-				//Copy Sequence frame number and data buffer into send buffer
-				printf("Frame num: %u at \n", frame_count);
-				memcpy(send_buf, &send_packet.frame_num, 4);
-				memcpy(&send_buf[6], &send_packet.data, data_size);
+					//Clear checksum and calculate
+					//Function returns checksum in network byte order
+					send_packet.checksum = 0;
+					//print_buf(send_packet);
+					uint16_t tmp = calc_checksum(&send_packet, data_size+6);
+					send_packet.checksum = tmp;
+					memcpy(&send_buf[4], &send_packet.checksum, data_size);
 
-				//Clear checksum and calculate
-				//Function returns checksum in network byte order
-				send_packet.checksum = 0;
-				//print_buf(send_packet);
-				uint16_t tmp = calc_checksum(&send_packet, data_size+6);
-				send_packet.checksum = tmp;
-				memcpy(&send_buf[4], &send_packet.checksum, data_size);
-
-				//push buffer onto packet storage vector
-				packets.push_back(send_packet);
-
+					//push buffer onto packet storage vector
+					packets.push_back(send_packet);
+				}
 
 				//Send Packet if it has data
+				uint16_t num = ntohl(send_packet.frame_num);
 				if(data_size != 0){
-					printf("Sending %d bytes of data \n", data_size+6);
+					printf("Sending Packet %d containing %d bytes \n", num, data_size+6);
 					sendto(sockfd, send_buf, data_size+6, 0,  (struct sockaddr*)&clientaddr, len);
 
 				}
@@ -207,7 +210,7 @@ int main (int argc, char** argv){
 				}
 
 			
-				//After 5 packets start recieving ACK's
+				//After 5 packets start looking for ACK's
 
 				if(count >= 5){
 					
@@ -223,7 +226,8 @@ int main (int argc, char** argv){
 					}
 
 					//Start Receiving ACK's
-					//Configure Timeout
+					//Set Timeout
+					tv.tv_usec = 100000;
 					if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
 						perror("Error");
 					}
@@ -236,6 +240,12 @@ int main (int argc, char** argv){
 						ack_num = ntohl(ack);						
 						acks.push_back(ack);
 						printf("ACK received for frame %d\n", ack_num);
+					}
+
+					//Clear Timeout
+					tv.tv_usec = 0;
+					if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+						perror("Error");
 					}
 					 
 					//Verify that recieved ACK is for the first packet sent in the window
@@ -254,19 +264,23 @@ int main (int argc, char** argv){
 						printf("Found the ACK for frame %d... sending next packet\n", ack_num);
 						packets.erase(packets.begin());
 						acks.erase(acks.begin()+flag-1);
+						nack_flag = false;
 					}
 					else{
 						//We did not get the correct ACK
 						//resend packet from vector
 						printf("Did not recieve ACK for correct frame... frame: %d\n", ack_num);
-						memcpy(&send_buf, &packets[ack], 256);
-						sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+						
+						memcpy(&send_buf, &packets[0], data_size+6);
+						printf("Re-sending packet %d\n", ntohl(packets[0].frame_num));
+						//sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+						nack_flag = true;
 					}
 				}
 					bool ack_flag = false;
 					if(data_size < 256){
 					if(feof(fp)){
-
+					int x;
 						//Make sure client received final 5 packets
 						for(i=0; i<packets.size(); i++){
 							for(j=0; j<acks.size(); j++){
@@ -274,15 +288,42 @@ int main (int argc, char** argv){
 									ack_num = ntohl(acks[i]);
 									printf("Received ACK for frame %d\n", ack_num);
 									ack_flag = true;
+									x=0;
 								}						
 							}
 							if(!ack_flag){
 								//resend missing packet
 								printf("ACK missing... resending packet\n");
-								memcpy(&send_buf, &packets[i], 256);
-								sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+								memcpy(&send_buf, &packets[i], 262);
+								if(i == packets.size()-1){
+									sendto(sockfd, send_buf, data_size+6, 0,  (struct sockaddr*)&clientaddr, len);
+								}
+								else{
+									sendto(sockfd, send_buf, BUF_SIZE, 0,  (struct sockaddr*)&clientaddr, len);
+								}
 								//receive missing ack
-								recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len);
+								//set Timeout
+								tv.tv_usec = 100000;
+								if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+									perror("Error");
+								}
+								if(recvfrom(sockfd, &ack, BUF_SIZE, 0, (struct sockaddr*)&clientaddr, &len) < 0){
+									i--;
+									x++;
+									printf("x = %d\n", x);
+									if(x>25){
+										sendto(sockfd, 0, 15, 0,  (struct sockaddr*)&clientaddr, len);
+										break;
+									}
+									else{
+										continue;
+									}
+								}
+								//Clear Timeout
+								tv.tv_usec = 0;
+								if (setsockopt(sockfd, SOL_SOCKET, SO_RCVTIMEO,&tv,sizeof(tv)) < 0) {
+									perror("Error");
+								}
 								ack_num = ntohl(ack);						
 								acks.push_back(ack);
 								printf("ACK received for frame %d\n", ack_num);	
